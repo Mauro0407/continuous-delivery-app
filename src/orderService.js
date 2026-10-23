@@ -7,3 +7,4 @@ function calculateTotal(items, taxRate = 0.15) {
 }
 
 module.exports = { calculateTotal };
+const unusedVariableBroken = 12345
