@@ -1,0 +1,116 @@
+name: Continuous Delivery Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    branches: [main, develop]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------
+  # ETAPA 1 & 2: QA y Pruebas en Paralelo (Workflow Reutilizable)
+  # ---------------------------------------------------------
+  quality-gate:
+    name: Quality Gate
+    uses: ./.github/workflows/reusable-test.yml
+    with:
+      node-version: '20'
+
+  # ---------------------------------------------------------
+  # ETAPA 3: Build & Package
+  # ---------------------------------------------------------
+  build:
+    name: Build Artifact
+    needs: [quality-gate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js with Cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Build Script
+        run: npm run build
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-artifact
+          path: dist/
+          retention-days: 1
+
+  # ---------------------------------------------------------
+  # ETAPA 4: Despliegue Selectivo (Solo main)
+  # ---------------------------------------------------------
+  deploy:
+    name: Deploy to Production
+    needs: [build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Build Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: production-artifact
+          path: dist
+
+      - name: Execute Production Deployment
+        run: |
+          echo "Simulación de despliegue a producción..."
+          cat dist/metadata.json
+
+  # ---------------------------------------------------------
+  # ETAPA 5: Notificaciones Post-Pipeline (Always / Success / Fail)
+  # ---------------------------------------------------------
+  pipeline-report:
+    name: Pipeline Status Notification
+    needs: [quality-gate, build, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - name: Post on Success
+        if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.sha,
+              state: 'success',
+              context: 'Continuous Delivery Pipeline',
+              description: 'Pipeline completado exitosamente sin errores.'
+            });
+
+      - name: Post on Failure
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.sha,
+              state: 'failure',
+              context: 'Continuous Delivery Pipeline',
+              description: 'Fallo detectado en alguna de las etapas del pipeline.'
+            });
